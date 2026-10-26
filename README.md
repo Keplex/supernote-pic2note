@@ -6,9 +6,20 @@ Supernote 离线图片插入与编辑插件，中英文界面。开发者 **Kepl
 
 ## 界面预览 / Screenshots
 
-| 中文界面 | English interface |
-| :---: | :---: |
-| ![Pic2Note 中文界面：八点裁剪、灰阶调节与图片工具](docs/screenshots/editor-zh.png) | ![Pic2Note English interface: eight-point cropping, tone controls and image tools](docs/screenshots/editor-en.png) |
+<table width="100%">
+  <tr>
+    <th width="50%" align="center">中文界面</th>
+    <th width="50%" align="center">English interface</th>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/editor-zh.png" alt="Pic2Note 中文界面：八点裁剪、灰阶调节与图片工具" width="100%">
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/editor-en.png" alt="Pic2Note English interface: eight-point cropping, tone controls and image tools" width="100%">
+    </td>
+  </tr>
+</table>
 
 ## 安装与升级
 
