@@ -4,6 +4,12 @@
 
 Supernote 离线图片插入与编辑插件，中英文界面。开发者 **Keplex**，借助 OpenAI GPT 辅助开发、研究与测试。独立社区项目；代码与原创图形采用 [MIT](LICENSE)。
 
+## 界面预览 / Screenshots
+
+| 中文界面 | English interface |
+| :---: | :---: |
+| ![Pic2Note 中文界面：八点裁剪、灰阶调节与图片工具](docs/screenshots/editor-zh.png) | ![Pic2Note English interface: eight-point cropping, tone controls and image tools](docs/screenshots/editor-en.png) |
+
 ## 安装与升级
 
 把完整的 **Pic2Note-1.0.1.snplg** 原样复制到设备 MyStyle，不解压。在“设置 → 应用 → 插件 → 选择安装包”中安装或升级，然后**重启设备**。版本号 1.0.1，版本码 18。内部 pluginKey、JS 模块和插件 ID 保持 LocalImage / limg26nomad00001，沿用旧版本安装身份。原始构建输出为 LocalImage-1.0.1.snplg，交付包内容相同。
