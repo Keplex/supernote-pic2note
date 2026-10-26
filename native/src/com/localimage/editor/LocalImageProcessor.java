@@ -11,7 +11,6 @@ import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
-import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -24,6 +23,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class LocalImageProcessor extends ReactContextBaseJavaModule {
+    private final PreviewPixels previewPixels = new PreviewPixels(), resizedPixels = new PreviewPixels();
+    private Info inspected; private String inspectedKey;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     public LocalImageProcessor(ReactApplicationContext context) { super(context); }
     @Override public String getName() { return "LocalImageProcessor"; }
@@ -40,12 +41,30 @@ public final class LocalImageProcessor extends ReactContextBaseJavaModule {
         promise.resolve(true);
     }
 
+    @ReactMethod public void getToolbarSide(Promise promise) {
+        promise.resolve(getReactApplicationContext().getSharedPreferences("localimage_editor_preferences", Context.MODE_PRIVATE)
+            .getString("toolbarSide", "right"));
+    }
+    @ReactMethod public void setToolbarSide(String side, Promise promise) {
+        if (!side.equals("left") && !side.equals("right")) {promise.reject("TOOLBAR_SIDE", "Invalid toolbar side"); return;}
+        getReactApplicationContext().getSharedPreferences("localimage_editor_preferences", Context.MODE_PRIVATE)
+            .edit().putString("toolbarSide", side).apply();
+        promise.resolve(true);
+    }
+
+    @ReactMethod public void latestImage(Promise promise) {
+        try {worker.execute(() -> {
+            try {promise.resolve(LatestImage.find(Environment.getExternalStorageDirectory()).getAbsolutePath());}
+            catch (Exception error) {promise.reject("IMAGE_SEARCH", error.getMessage(), error);}
+        });} catch (RuntimeException error) {promise.reject("IMAGE_CLOSED", "编辑器已关闭，请重新打开插件", error);}
+    }
+
     private interface Job { WritableMap run() throws Exception; }
     private void dispatch(Promise promise, Job job) {
         try {
             worker.execute(() -> {
                 try { promise.resolve(job.run()); }
-                catch (OutOfMemoryError error) { promise.reject("IMAGE_MEMORY", "图片处理内存不足，请缩小原图后重试"); }
+                catch (OutOfMemoryError error) { previewPixels.clear(); resizedPixels.clear(); inspected=null; inspectedKey=null; promise.reject("IMAGE_MEMORY", "图片处理内存不足，请缩小原图后重试"); }
                 catch (Exception error) { promise.reject("IMAGE_PROCESS", error.getMessage(), error); }
             });
         } catch (RuntimeException error) { promise.reject("IMAGE_CLOSED", "编辑器已关闭，请重新打开插件", error); }
@@ -60,6 +79,8 @@ public final class LocalImageProcessor extends ReactContextBaseJavaModule {
     private Info info(String path) throws Exception {
         File file = new File(path);
         if (!file.isAbsolute() || !file.isFile() || !file.canRead()) throw new IOException("图片不存在或不可读取");
+        String key=path+"|"+file.length()+"|"+file.lastModified();
+        if(key.equals(inspectedKey)&&inspected!=null)return inspected;
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inJustDecodeBounds = true;
         BitmapFactory.decodeFile(path, options);
@@ -74,7 +95,7 @@ public final class LocalImageProcessor extends ReactContextBaseJavaModule {
             result.orientation = new ExifInterface(path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1);
         } catch (IOException ignored) { /* PNG without EXIF is valid. */ }
         if (result.orientation < 1 || result.orientation > 8) result.orientation = 1;
-        return result;
+        inspected=result;inspectedKey=key;return result;
     }
 
     @ReactMethod public void inspect(String path, Promise promise) {
@@ -114,71 +135,87 @@ public final class LocalImageProcessor extends ReactContextBaseJavaModule {
         }
     }
 
-    /** Render from the source every time. No cumulative edits or source overwrites. */
+    /** Preview reuses source pixels, never a previously adjusted image. Export keeps full quality. */
     @ReactMethod public void render(String source, String pluginRoot, ReadableMap params, String mode, Promise promise) {
         dispatch(promise, () -> renderImage(source, pluginRoot, params, mode));
     }
 
     private WritableMap renderImage(String source, String pluginRoot, ReadableMap params, String mode) throws Exception {
-        if (!mode.equals("base") && !mode.equals("neutral") && !mode.equals("preview") && !mode.equals("export")) throw new IOException("处理模式无效");
+        if (!mode.equals("base") && !mode.equals("export") && !mode.equals("canvas")) throw new IOException("处理模式无效");
         boolean exporting = mode.equals("export");
         Info info = info(source);
         double left = params.getDouble("left"), top = params.getDouble("top");
         double right = params.getDouble("right"), bottom = params.getDouble("bottom");
-        int[] requested = ToneMath.cropPixels(info.displayWidth(), info.displayHeight(), left, top, right, bottom);
+        int turns = params.hasKey("rotation") ? params.getInt("rotation") : 0;
+        if (turns < 0 || turns > 3) throw new IOException("Invalid rotation");
+        boolean mirrorX = params.hasKey("mirrorX") && params.getBoolean("mirrorX");
+        boolean mirrorY = params.hasKey("mirrorY") && params.getBoolean("mirrorY");
+        boolean canvas = mode.equals("canvas");
+        int displayW = turns % 2 == 1 ? info.displayHeight() : info.displayWidth();
+        int displayH = turns % 2 == 1 ? info.displayWidth() : info.displayHeight();
+        int[] requested = ToneMath.cropPixels(displayW, displayH, left, top, right, bottom);
         int limit = exporting ? 2560 : 1000;
         int sample = 1;
-        while (Math.max(requested[2], requested[3]) / (sample * 2) >= limit) sample *= 2;
+        while ((canvas ? Math.max(displayW,displayH) : Math.max(requested[2], requested[3])) / (sample * 2) >= limit) sample *= 2;
         Bitmap decoded = null, output = null;
         File destination = null;
         boolean completed = false;
         try {
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sample; options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            decoded = BitmapFactory.decodeFile(source, options);
-            if (decoded == null) throw new IOException("图片解码失败");
-            int width = decoded.getWidth(), height = decoded.getHeight();
-            int[] input = new int[width * height];
-            decoded.getPixels(input, 0, width, 0, 0, width, height);
-            decoded.recycle(); decoded = null;
-            boolean swapped = info.orientation >= 5 && info.orientation <= 8;
-            int[] crop = ToneMath.cropPixels(swapped ? height : width, swapped ? width : height, left, top, right, bottom);
-            double factor = Math.min(1, limit / (double) Math.max(crop[2], crop[3]));
-            int outWidth = Math.max(1, (int) Math.round(crop[2] * factor));
-            int outHeight = Math.max(1, (int) Math.round(crop[3] * factor));
-            // Allocate only the bounded output. The pixel engine is also exercised by JVM tests.
-            int[] pixels = ToneMath.resample(input, width, height, info.orientation, crop, outWidth, outHeight);
-            input = null;
-            int[] before = ToneMath.histogram(pixels);
-            int black = params.getInt("black"), white = params.getInt("white");
-            if (params.getBoolean("autoLevels")) {
-                int[] levels = ToneMath.automaticLevels(before); black = levels[0]; white = levels[1];
+            File sourceFile=new File(source);long length=sourceFile.length(),modified=sourceFile.lastModified();
+            PreviewPixels.Frame cached=exporting?null:previewPixels.get(source,length,modified,sample);
+            int width,height;int[] input;
+            if(cached!=null){width=cached.width;height=cached.height;input=cached.pixels;}
+            else {
+                BitmapFactory.Options options=new BitmapFactory.Options();
+                options.inSampleSize=sample;options.inPreferredConfig=Bitmap.Config.ARGB_8888;
+                decoded=BitmapFactory.decodeFile(source,options);if(decoded==null)throw new IOException("图片解码失败");
+                width=decoded.getWidth();height=decoded.getHeight();input=new int[width*height];
+                decoded.getPixels(input,0,width,0,0,width,height);decoded.recycle();decoded=null;
+                if(!exporting){for(int i=0;i<input.length;i++){int g=ToneMath.luminanceOnWhite(input[i]);input[i]=0xff000000|(g<<16)|(g<<8)|g;}
+                    previewPixels.put(source,length,modified,sample,new PreviewPixels.Frame(input,width,height));}
             }
+            boolean swapped = info.orientation >= 5 && info.orientation <= 8;
+            int orientedW = swapped ? height : width, orientedH = swapped ? width : height;
+            int rotatedW = turns % 2 == 1 ? orientedH : orientedW, rotatedH = turns % 2 == 1 ? orientedW : orientedH;
+            int[] crop = ToneMath.cropPixels(rotatedW, rotatedH, left, top, right, bottom);
+            int[] region = canvas ? new int[]{0,0,rotatedW,rotatedH} : crop;
+            double factor = Math.min(1, limit / (double) Math.max(region[2], region[3]));
+            int outWidth = Math.max(1, (int) Math.round(region[2] * factor));
+            int outHeight = Math.max(1, (int) Math.round(region[3] * factor));
+            String viewKey=source+"|"+info.orientation+"|"+turns+"|"+mirrorX+"|"+mirrorY+"|"+Arrays.toString(region)+"|"+outWidth+"x"+outHeight;
+            PreviewPixels.Frame plane=exporting?null:resizedPixels.get(viewKey,length,modified,sample);
+            int[] pixels;
+            if(plane!=null)pixels=plane.pixels.clone();
+            else {
+                pixels=ToneMath.resampleTransformed(input,width,height,info.orientation,turns,mirrorX,mirrorY,region,outWidth,outHeight);
+                if(!exporting){resizedPixels.put(viewKey,length,modified,sample,new PreviewPixels.Frame(pixels,outWidth,outHeight));pixels=pixels.clone();}
+            }
+            int black=params.getInt("black"),white=params.getInt("white");
+            if(params.getBoolean("autoLevels")) {
+                int[] before;
+                if(canvas && !Arrays.equals(crop,region)){double scale=Math.min(1,1000.0/Math.max(crop[2],crop[3]));
+                    before=ToneMath.histogram(ToneMath.resampleTransformed(input,width,height,info.orientation,turns,mirrorX,mirrorY,crop,
+                        Math.max(1,(int)Math.round(crop[2]*scale)),Math.max(1,(int)Math.round(crop[3]*scale))));
+                }else before=ToneMath.histogram(pixels);
+                int[] levels=ToneMath.automaticLevels(before);black=levels[0];white=levels[1];
+            }
+            input=null;
             int[] lookup = ToneMath.lookup(params.getDouble("brightness"), params.getDouble("contrast"),
                 params.getDouble("shadows"), params.getDouble("highlights"), black, white);
             boolean opaqueWhite = params.hasKey("opaqueWhite") && params.getBoolean("opaqueWhite");
-            int[] after = ToneMath.apply(pixels, lookup, opaqueWhite);
+            ToneMath.applyInPlace(pixels, lookup, opaqueWhite, params.hasKey("invert") && params.getBoolean("invert"));
             output = Bitmap.createBitmap(pixels, outWidth, outHeight, Bitmap.Config.ARGB_8888);
             File directory = outputDirectory(pluginRoot, exporting);
             String prefix = exporting ? "adjusted-" : mode + "-";
             destination = new File(directory, prefix + UUID.randomUUID() + ".png");
             try (FileOutputStream stream = new FileOutputStream(destination)) {
                 if (!output.compress(Bitmap.CompressFormat.PNG, 100, stream)) throw new IOException("PNG 保存失败");
-                stream.flush(); stream.getFD().sync();
+                stream.flush(); if(exporting)stream.getFD().sync();
             }
             WritableMap result = Arguments.createMap();
             result.putString("path", destination.getAbsolutePath());
             result.putInt("width", outWidth); result.putInt("height", outHeight);
             result.putInt("black", black); result.putInt("white", white);
-            WritableArray histogram = Arguments.createArray();
-            for (int i = 0; i < 16; i++) {
-                int count = 0;
-                for (int j = i * 16; j < i * 16 + 16; j++) count += after[j];
-                histogram.pushInt(count);
-            }
-            result.putArray("histogram", histogram);
-            result.putDouble("darkPercent", after[0] * 100.0 / pixels.length);
-            result.putDouble("lightPercent", (after[255] + (opaqueWhite ? after[254] : 0)) * 100.0 / pixels.length);
             if (!exporting) trimPreviews(directory, prefix, destination);
             completed = true;
             return result;
@@ -189,5 +226,5 @@ public final class LocalImageProcessor extends ReactContextBaseJavaModule {
         }
     }
 
-    @Override public void invalidate() { worker.shutdown(); super.invalidate(); }
+    @Override public void invalidate() { worker.shutdown(); previewPixels.clear(); resizedPixels.clear(); inspected=null; inspectedKey=null; super.invalidate(); }
 }

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 32 32">
-  <title>About Local Image</title>
+  <title>About Pic2Note</title>
   <circle cx="16" cy="16" r="12" fill="none" stroke="black" stroke-width="2.8"/>
   <circle cx="16" cy="10" r="1.6" fill="black"/>
   <path d="M16 15v8" fill="none" stroke="black" stroke-width="2.8" stroke-linecap="round"/>

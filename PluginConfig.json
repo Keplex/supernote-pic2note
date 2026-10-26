@@ -1,11 +1,11 @@
 {
-  "name": "本地插图",
+  "name": "Pic2Note",
   "pluginKey": "LocalImage",
   "pluginID": "limg26nomad00001",
   "iconPath": "assets/icon.png",
-  "desc": "本地插图、裁剪与灰阶调整，中英双语、自动预览。Offline image insertion, crop and tone controls.",
-  "versionCode": "9",
-  "versionName": "0.5.2",
+  "desc": "Pic2Note：八点裁剪、灰阶、旋转镜像、撤销重做和图片替换。Offline image editing for Supernote.",
+  "versionCode": "18",
+  "versionName": "1.0.1",
   "jsMainPath": "index",
   "uses-permissions": [
     "plugin.permission.FILE:READ",

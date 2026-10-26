@@ -1,5 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 24 24">
-  <title>Compare original and edited tone</title>
-  <path d="M12 2a10 10 0 0 0 0 20Z" fill="black"/>
-  <circle cx="12" cy="12" r="10" fill="none" stroke="black" stroke-width="1.5"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24"><g transform="translate(0 0)" fill="none" stroke="black" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><defs><clipPath id="frame"><rect x="3" y="5" width="18" height="14" rx="2"/></clipPath></defs><path fill="black" stroke="none" clip-path="url(#frame)" d="M12 4h10v16H12z"/><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 10l-2 2 2 2"/><path stroke="white" d="M15 10l2 2-2 2"/></g></svg>

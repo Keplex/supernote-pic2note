@@ -102,12 +102,13 @@ public final class ToneMathTest {
             try {ToneMath.lookup(9, 0, 0, 0, 0, 255);} catch (IllegalArgumentException e) {threw = true;}
             truth(threw);
         });
-        test("white masking changes only pure white and remains opaque", () -> {
+        test("white masking maps 240 through 255 to white ink, preserving all darker pixels", () -> {
             int[] pixels = new int[256];
             for (int i = 0; i < 256; i++) pixels[i] = gray(i);
             int[] hist = ToneMath.apply(pixels, ToneMath.lookup(0,0,0,0,0,255), true);
-            for (int i = 0; i < 255; i++) equal(pixels[i], gray(i));
-            equal(pixels[255], gray(254)); equal(hist[255], 0); equal(hist[254], 2);
+            for (int i = 0; i < 240; i++) equal(pixels[i], gray(i));
+            for (int i = 240; i < 256; i++) equal(pixels[i], gray(254));
+            equal(hist[255], 0); equal(hist[254], 16);
             equal(Arrays.stream(hist).sum(), 256);
         });
         test("white masking happens after tone clips highlights to white", () -> {
@@ -116,9 +117,77 @@ public final class ToneMathTest {
             for (int pixel : pixels) equal(pixel, gray(254));
         });
         test("default output still preserves pure white", () -> {
-            int[] pixels = {gray(255)};
+            int[] pixels = {gray(239),gray(240),gray(254),gray(255)};
             ToneMath.apply(pixels, ToneMath.lookup(0,0,0,0,0,255), false);
-            equal(pixels[0], gray(255));
+            equal(pixels[0],gray(239));equal(pixels[1],gray(240));equal(pixels[2],gray(254));equal(pixels[3],gray(255));
+        });
+        test("expanded white threshold applies after inversion with exact 239/240 boundary", () -> {
+            int[] pixels={gray(15),gray(16),gray(0),gray(255)};
+            ToneMath.applyInPlace(pixels,ToneMath.lookup(0,0,0,0,0,255),true,true);
+            equal(pixels[0],gray(254));equal(pixels[1],gray(239));equal(pixels[2],gray(254));equal(pixels[3],gray(0));
+        });
+        test("clockwise rotation and EXIF compose without losing pixels", () -> {
+            int[] input = {gray(10),gray(20),gray(30),gray(40),gray(50),gray(60)};
+            int[] turned = ToneMath.resampleTurned(input,2,3,1,1,new int[]{0,0,3,2},3,2);
+            int[] expected = {50,30,10,60,40,20};
+            for(int i=0;i<expected.length;i++) equal(turned[i],gray(expected[i]));
+            int[] twice = ToneMath.resampleTurned(input,2,3,6,1,new int[]{0,0,2,3},2,3);
+            for(int i=0;i<6;i++) equal(twice[i],input[5-i]);
+        });
+        test("inversion precedes white masking and preserves grayscale", () -> {
+            int[] pixels={gray(0),gray(255),gray(127)};
+            ToneMath.apply(pixels,ToneMath.lookup(0,0,0,0,0,255),true,true);
+            equal(pixels[0],gray(254));equal(pixels[1],gray(0));equal(pixels[2],gray(128));
+        });
+        test("latest uses creation time despite opposite modification order and stays inside six roots", () -> {
+            try {
+                File root = java.nio.file.Files.createTempDirectory("pic2note-search").toFile();
+                File imported = new File(root,"INBOX/fresh.JPEG"), old = new File(root,"EXPORT/old.png");
+                File[] excluded={new File(root,"MyStyle/LocalImage/adjusted.png"),new File(root,".hidden/secret.png"),new File(root,"Android/cache/no.png"),new File(root,"plugins/cache/no.png"),new File(root,"Download/forbidden.png"),new File(root,"INBOX/.hidden/no.png")};
+                old.getParentFile().mkdirs();java.nio.file.Files.write(old.toPath(),new byte[]{1});old.setLastModified(9000);
+                imported.getParentFile().mkdirs();java.nio.file.Files.write(imported.toPath(),new byte[]{1});imported.setLastModified(1000);
+                for(File file:excluded){file.getParentFile().mkdirs();java.nio.file.Files.write(file.toPath(),new byte[]{1});file.setLastModified(3000);}
+                if(!LatestImage.find(root, file -> file.equals(imported) ? 2000 : 1000).equals(imported.getAbsoluteFile()))throw new AssertionError("wrong newest file");
+                try(java.util.stream.Stream<java.nio.file.Path> files=java.nio.file.Files.walk(root.toPath())){
+                    files.sorted(java.util.Comparator.reverseOrder()).forEach(file->{try{java.nio.file.Files.delete(file);}catch(Exception e){throw new RuntimeException(e);}});
+                }
+            }catch(Exception e){throw new RuntimeException(e);}
+        });
+        test("display-axis mirrors compose with all EXIF orientations and rotations", () -> {
+            int[] input={gray(10),gray(20),gray(30),gray(40),gray(50),gray(60)};
+            for(int orientation=1;orientation<=8;orientation++)for(int turns=0;turns<4;turns++) {
+                int w=orientation>=5?3:2,h=orientation>=5?2:3;if(turns%2==1){int t=w;w=h;h=t;}
+                int[] crop={0,0,w,h};int[] base=ToneMath.resampleTurned(input,2,3,orientation,turns,crop,w,h);
+                for(boolean mx:new boolean[]{false,true})for(boolean my:new boolean[]{false,true}) {
+                    int[] out=ToneMath.resampleTransformed(input,2,3,orientation,turns,mx,my,crop,w,h);
+                    for(int y=0;y<h;y++)for(int x=0;x<w;x++)equal(out[y*w+x],base[(my?h-1-y:y)*w+(mx?w-1-x:x)]);
+                }
+            }
+        });
+        test("mirror crop and downsample agree with mirroring the full transformed image", () -> {
+            int[] input=new int[48];for(int i=0;i<48;i++)input[i]=gray(i*5);
+            int[] full=ToneMath.resampleTransformed(input,8,6,1,1,true,false,new int[]{0,0,6,8},6,8);
+            int[] part=ToneMath.resampleTransformed(input,8,6,1,1,true,false,new int[]{1,2,3,4},3,4);
+            for(int y=0;y<4;y++)for(int x=0;x<3;x++)equal(part[y*3+x],full[(y+2)*6+x+1]);
+        });
+        test("preview cache is single-source and invalidates metadata and sample changes", () -> {
+            PreviewPixels cache=new PreviewPixels();int[] original={gray(10),gray(80),gray(255)};
+            PreviewPixels.Frame frame=new PreviewPixels.Frame(original,3,1);cache.put("a",12,100,2,frame);
+            if(cache.get("a",12,100,2)!=frame)throw new AssertionError("cache miss");
+            if(cache.get("a",13,100,2)!=null||cache.get("a",12,101,2)!=null||cache.get("a",12,100,1)!=null||cache.get("b",12,100,2)!=null)throw new AssertionError("stale hit");
+            int[] output=frame.pixels.clone();ToneMath.applyInPlace(output,ToneMath.lookup(2,0,0,0,0,255),true,true);
+            equal(frame.pixels[0],gray(10));equal(frame.pixels[1],gray(80));
+            cache.put("b",2,4,1,new PreviewPixels.Frame(new int[]{1},1,1));if(cache.get("a",12,100,2)!=null)throw new AssertionError("multiple sources");
+            cache.clear();if(cache.get("b",2,4,1)!=null)throw new AssertionError("not released");
+        });
+        test("preview cache refuses oversized frames", () -> {
+            PreviewPixels cache=new PreviewPixels();cache.put("a",1,1,1,new PreviewPixels.Frame(new int[4000001],4000001,1));
+            if(cache.get("a",1,1,1)!=null)throw new AssertionError("unbounded cache");
+        });
+        test("no-statistics processing equals original pixel engine including alpha and masking", () -> {
+            int[] pixels={0x00000000,0x80706050,gray(0),gray(127),gray(255)};int[] other=pixels.clone();int[] lut=ToneMath.lookup(1,2,1,1,0,255);
+            ToneMath.apply(pixels,lut,true,true);ToneMath.applyInPlace(other,lut,true,true);
+            for(int i=0;i<pixels.length;i++)equal(pixels[i],other[i]);
         });
         writeComparison(new File(args[0], "tone-comparison.png"));
         System.out.println("Native pixel engine: " + passed + " tests passed; comparison image generated.");

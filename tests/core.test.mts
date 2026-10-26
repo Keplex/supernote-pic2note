@@ -257,3 +257,39 @@ test('denying write permission stops export before any file is created', async (
   await assert.rejects(f.controller.insert(async () => {called = true; return '/adjusted.png';}));
   assert.equal(called, false);
 });
+
+test('latest scan requests read permission with folder guidance before scanning',async()=>{
+ const f=fixture();f.state.granted=0;let scans=0,description='';
+ const deps={...f.deps,requestPermission:async(permission:string,text:string)=>{assert.equal(permission,READ);description=text;f.state.granted=1;return 2;},latest:async()=>{scans++;return '/storage/emulated/0/INBOX/new.png';}};
+ const c=new ImageController(deps);await c.pick('latest');assert.match(description,/INBOX/);assert.match(description,/SCREENSHOT/);assert.equal(scans,1);
+});
+test('denied latest permission shows settings guidance without touching directories',async()=>{
+ const f=fixture();f.state.granted=0;f.state.choice=0;let scans=0;
+ const c=new ImageController({...f.deps,latest:async()=>{scans++;return '/storage/emulated/0/INBOX/new.png';}});
+ await assert.rejects(c.pick('latest'),/设置.*插件/);assert.equal(scans,0);
+});
+
+
+test('selected-picture adapter dimensions are reused and temporary source lives until writeback',async()=>{
+ const f=fixture(),released:any[]=[],element={uuid:'selected',type:200,numInPage:7,picture:{picturePath:'embedded.png',rect:{left:0,top:0,right:100,bottom:100}}};
+ let exists=0,measures=0,modified=0;
+ const c=new ImageController({...f.deps,exists:async()=>{exists++;return true;},measure:async()=>{measures++;return {width:1,height:1};},
+  selectedPicture:async()=>({path:'/private/lasso-source.png',element,width:800,height:600,temporaryPath:'/private/lasso-source.png'}),
+  releasePicture:(el,path)=>released.push([el.uuid,path]),replacePicture:async()=>{modified++;assert.equal(released.length,0);return ok(true);}});
+ const selected=await c.pick('selected');assert.equal(selected?.width,800);assert.equal(exists,0);assert.equal(measures,0);assert.deepEqual(released,[]);
+ await c.insert(async()=>'/edited.png');assert.equal(modified,1);assert.deepEqual(released,[['selected','/private/lasso-source.png']]);c.dispose();assert.equal(released.length,1);
+});
+test('selected-picture cancellation releases only its own cache and temporary source once',async()=>{
+ const f=fixture(),released:any[]=[],element={uuid:'selected',type:200,numInPage:7,picture:{picturePath:'embedded.png',rect:{left:0,top:0,right:100,bottom:100}}};
+ const c=new ImageController({...f.deps,selectedPicture:async()=>({path:'/private/lasso-source.png',element,width:800,height:600,temporaryPath:'/private/lasso-source.png'}),releasePicture:(el,path)=>released.push([el.uuid,path])});
+ await c.pick('selected');c.dispose();c.dispose();assert.deepEqual(released,[['selected','/private/lasso-source.png']]);assert.ok(!f.calls.includes('insert'));
+});
+
+test('replacement saves, closes and releases without selection recovery or duplicate mutation',async()=>{
+ const f=fixture(),events:string[]=[],element={uuid:'selected',type:200,numInPage:7,picture:{picturePath:'/source.png',rect:{left:0,top:0,right:100,bottom:100}}};
+ const c=new ImageController({...f.deps,selectedPicture:async()=>({path:'/source.png',element,width:100,height:100}),
+   replacePicture:async()=>{events.push('replace+save');return ok(true);},returnToNote:async()=>{events.push('close');return true;},
+   releasePicture:()=>events.push('release')});
+ await c.pick('selected');const result=await c.insert(async()=>'/edited.png');assert.deepEqual(events,['replace+save','close','release']);
+ assert.deepEqual(result,{inserted:true,returned:true});assert.equal(c.canInsert,false);await assert.rejects(c.insert());
+});

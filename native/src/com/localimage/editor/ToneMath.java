@@ -7,6 +7,7 @@ public final class ToneMath {
     public static double unit(double value) { return Math.max(0, Math.min(1, value)); }
 
     public static int luminanceOnWhite(int argb) {
+        if((argb>>>24)==255 && ((argb>>>16)&255)==((argb>>>8)&255) && ((argb>>>8)&255)==(argb&255))return argb&255;
         int a = (argb >>> 24) & 255;
         int r = (((argb >>> 16) & 255) * a + 255 * (255 - a) + 127) / 255;
         int g = (((argb >>> 8) & 255) * a + 255 * (255 - a) + 127) / 255;
@@ -64,13 +65,24 @@ public final class ToneMath {
         return apply(pixels, lookup, false);
     }
 
-    /** Supernote treats #FEFEFE as white ink; applied after resizing and tone. */
+    /** Near-white e-ink highlights become #FEFEFE white ink, after resizing/tone/inversion. */
+    public static final int WHITE_MASK_MIN = 240;
     public static int[] apply(int[] pixels, int[] lookup, boolean opaqueWhite) {
-        int[] histogram = new int[256];
+        return apply(pixels, lookup, opaqueWhite, false);
+    }
+    public static int[] apply(int[] pixels, int[] lookup, boolean opaqueWhite, boolean invert) {
+        return applyPixels(pixels,lookup,opaqueWhite,invert,true);
+    }
+    public static void applyInPlace(int[] pixels,int[] lookup,boolean opaqueWhite,boolean invert){
+        applyPixels(pixels,lookup,opaqueWhite,invert,false);
+    }
+    private static int[] applyPixels(int[] pixels,int[] lookup,boolean opaqueWhite,boolean invert,boolean count){
+        int[] histogram = count?new int[256]:null;
         for (int i = 0; i < pixels.length; i++) {
             int gray = lookup[luminanceOnWhite(pixels[i])];
-            if (opaqueWhite && gray == 255) gray = 254;
-            histogram[gray]++;
+            if (invert) gray = 255 - gray;
+            if (opaqueWhite && gray >= WHITE_MASK_MIN) gray = 254;
+            if(count)histogram[gray]++;
             pixels[i] = 0xff000000 | (gray << 16) | (gray << 8) | gray;
         }
         return histogram;
@@ -106,9 +118,34 @@ public final class ToneMath {
     }
 
     public static int[] resample(int[] input, int width, int height, int orientation, int[] crop, int outWidth, int outHeight) {
+        return resampleTurned(input, width, height, orientation, 0, crop, outWidth, outHeight);
+    }
+
+    public static int rotatedIndex(int x, int y, int width, int height, int orientation, int turns) {
+        int w = orientation >= 5 && orientation <= 8 ? height : width;
+        int h = orientation >= 5 && orientation <= 8 ? width : height;
+        switch (turns) {
+            case 1: return sourceIndex(y, h-1-x, width, height, orientation);
+            case 2: return sourceIndex(w-1-x, h-1-y, width, height, orientation);
+            case 3: return sourceIndex(w-1-y, x, width, height, orientation);
+            default: return sourceIndex(x,y,width,height,orientation);
+        }
+    }
+    public static int[] resampleTurned(int[] input, int width, int height, int orientation, int turns, int[] crop, int outWidth, int outHeight) {
+        return resampleTransformed(input,width,height,orientation,turns,false,false,crop,outWidth,outHeight);
+    }
+    private static int transformedIndex(int x, int y, int width, int height, int orientation, int turns, boolean mirrorX, boolean mirrorY) {
+        int w = orientation >= 5 && orientation <= 8 ? height : width;
+        int h = orientation >= 5 && orientation <= 8 ? width : height;
+        if (turns % 2 == 1) {int temp = w; w = h; h = temp;}
+        return rotatedIndex(mirrorX ? w-1-x : x, mirrorY ? h-1-y : y, width,height,orientation,turns);
+    }
+    public static int[] resampleTransformed(int[] input, int width, int height, int orientation, int turns, boolean mirrorX, boolean mirrorY, int[] crop, int outWidth, int outHeight) {
+        if (turns < 0 || turns > 3) throw new IllegalArgumentException("Invalid rotation");
         int[] pixels = new int[outWidth * outHeight];
         int displayWidth = orientation >= 5 && orientation <= 8 ? height : width;
         int displayHeight = orientation >= 5 && orientation <= 8 ? width : height;
+        if (turns % 2 == 1) {int temp = displayWidth; displayWidth = displayHeight; displayHeight = temp;}
         for (int y = 0; y < outHeight; y++) {
             double sy = crop[1] + (y + 0.5) * crop[3] / outHeight - 0.5;
             sy = Math.max(crop[1], Math.min(crop[1] + crop[3] - 1, sy));
@@ -119,10 +156,10 @@ public final class ToneMath {
                 sx = Math.max(crop[0], Math.min(crop[0] + crop[2] - 1, sx));
                 int x0 = (int) sx, x1 = Math.min(displayWidth - 1, x0 + 1);
                 double fx = sx - x0;
-                int a = luminanceOnWhite(input[sourceIndex(x0, y0, width, height, orientation)]);
-                int b = luminanceOnWhite(input[sourceIndex(x1, y0, width, height, orientation)]);
-                int c = luminanceOnWhite(input[sourceIndex(x0, y1, width, height, orientation)]);
-                int d = luminanceOnWhite(input[sourceIndex(x1, y1, width, height, orientation)]);
+                int a = luminanceOnWhite(input[transformedIndex(x0, y0, width, height, orientation, turns, mirrorX, mirrorY)]);
+                int b = luminanceOnWhite(input[transformedIndex(x1, y0, width, height, orientation, turns, mirrorX, mirrorY)]);
+                int c = luminanceOnWhite(input[transformedIndex(x0, y1, width, height, orientation, turns, mirrorX, mirrorY)]);
+                int d = luminanceOnWhite(input[transformedIndex(x1, y1, width, height, orientation, turns, mirrorX, mirrorY)]);
                 int gray = (int) Math.round((a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy);
                 pixels[y * outWidth + x] = 0xff000000 | (gray << 16) | (gray << 8) | gray;
             }

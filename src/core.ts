@@ -1,9 +1,10 @@
+import type {PictureElement, PictureSource} from './noteImage.ts';
 import {t, translateError} from './i18n.ts';
 export const READ = 'plugin.permission.FILE:READ';
 export const WRITE = 'plugin.permission.FILE:WRITE';
 
 export interface Context {path: string; page: number}
-export interface Selection {path: string; uri: string; width: number; height: number; target: Context}
+export interface Selection {path: string; uri: string; width: number; height: number; target: Context; replacement?: PictureElement; temporaryPath?: string}
 export interface Dependencies {
   hasPermission(permission: string): Promise<number>;
   requestPermission(permission: string, description: string): Promise<number>;
@@ -14,14 +15,18 @@ export interface Dependencies {
   measure(uri: string): Promise<{width: number; height: number}>;
   insert(path: string): Promise<unknown>;
   returnToNote(): Promise<boolean>;
+  latest?(): Promise<string>;
+  selectedPicture?(target: Context): Promise<PictureSource>;
+  releasePicture?(element: PictureElement, temporaryPath?: string): void;
+  replacePicture?(selection: Selection, path: string): Promise<unknown>;
 }
 
-export async function ensurePermission(deps: Pick<Dependencies, 'hasPermission' | 'requestPermission'>, name: string): Promise<void> {
+export async function ensurePermission(deps: Pick<Dependencies, 'hasPermission' | 'requestPermission'>, name: string, description?: string): Promise<void> {
   if (await deps.hasPermission(name) === 1) {return;}
   const writing = name === WRITE;
-  const choice = await deps.requestPermission(name, t(writing
+  const choice = await deps.requestPermission(name, t(description || (writing
     ? '保存处理后的图片并插入笔记，需要文件写入权限。'
-    : '预览和调整图片需要读取本地文件。'));
+    : '预览和调整图片需要读取本地文件。')));
   if (choice !== 1 && choice !== 2) {
     throw new Error(choice === -1 ? '已取消授权，尚未修改笔记。'
       : `${writing ? '写入' : '读取'}权限未获允许，请在设置 → 应用 → 插件中更改权限。`);
@@ -92,6 +97,7 @@ export class ImageController {
   private selected: Selection | null = null;
 
   constructor(deps: Dependencies) {this.deps = deps;}
+  dispose() {const old=this.selected;this.selected=null;if(old?.replacement)this.deps.releasePicture?.(old.replacement, old.temporaryPath);}
   get selection(): Selection | null {return this.selected;}
   get canInsert(): boolean {return !!this.selected && !this.consumed && !this.busy;}
 
@@ -100,47 +106,56 @@ export class ImageController {
   }
 
   async context(): Promise<Context> {
-    const file = response(await this.deps.currentFile());
+    const [fileResult,pageResult]=await Promise.all([this.deps.currentFile(),this.deps.currentPage()]);
+    const file = response(fileResult);
     if (file.success !== true || typeof file.result !== 'string') {
       throw apiError(file.error, '读取当前笔记失败');
     }
     if (!/\.note$/i.test(file.result)) {
-      throw new Error('请打开一本笔记，从笔记工具栏进入“本地插图”。');
+      throw new Error('请打开一本笔记，从笔记工具栏进入“Pic2Note”。');
     }
-    const page = response(await this.deps.currentPage());
+    const page = response(pageResult);
     if (page.success !== true || !Number.isInteger(page.result) || Number(page.result) < 0) {
       throw apiError(page.error, '读取当前页失败');
     }
     return {path: file.result, page: Number(page.result)};
   }
 
-  async pick(): Promise<Selection | null> {
+  async pick(mode: 'file' | 'latest' | 'selected' = 'file'): Promise<Selection | null> {
     if (this.busy) {throw new Error('操作进行中，请稍候。');}
     this.busy = true;
+    let replacement: PictureElement | undefined; let source: PictureSource | undefined;
     try {
-      await this.permission(READ);
+      await ensurePermission(this.deps, READ, mode === 'latest' ? '选择最新需要文件读取权限，仅搜索 Document、EXPORT、INBOX、MyStyle、Note、SCREENSHOT。请将待导入图片放入 INBOX 或 EXPORT。' : undefined);
       const target = await this.context();
-      const files = await this.deps.selectFile({
+      let files: string[] | null | undefined;
+      if (mode === 'latest') {files = [await this.deps.latest!()];}
+      else if (mode === 'selected') {source = await this.deps.selectedPicture!(target); files = [source.path]; replacement = source.element;}
+      else {files = await this.deps.selectFile({
         selectType: 1,
         suffixList: ['png', 'jpg', 'jpeg', 'PNG', 'JPG', 'JPEG'],
         maxNum: 1,
         title: t('选择要插入的图片'),
         rightButtonText: t('选择'),
-      });
+      });}
       if (!files?.length || !files[0]) {return null;}
       const path = imagePath(files[0]);
+      // The lasso adapter already verifies its source and size; avoid a second bridge round trip.
       // Opening the native picker may end a one-time permission session.
-      await this.permission(READ);
-      if (!(await this.deps.exists(path))) {throw new Error('图片不存在或无法读取，请重新选择。');}
+      if(mode === 'file')await this.permission(READ);
       const uri = fileUri(path);
       let size;
-      try {size = await this.deps.measure(uri);}
-      catch (error) {throw new Error(`无法解码图片，请检查文件是否完整、已解锁且可读取。\n${errorText(error)}`);}
+      try {
+        if(source?.width && source?.height)size={width:source.width,height:source.height};
+        else {if (!(await this.deps.exists(path)))throw new Error('图片不存在或无法读取，请重新选择。');size=await this.deps.measure(uri);}
+      }
+      catch (error) {if(error instanceof Error && error.message==='图片不存在或无法读取，请重新选择。')throw error;throw new Error(`无法解码图片，请检查文件是否完整、已解锁且可读取。\n${errorText(error)}`);}
       validateDimensions(size.width, size.height);
-      this.selected = {path, uri, ...size, target};
+      this.selected = {path, uri, ...size, target, ...(replacement ? {replacement,temporaryPath:source?.temporaryPath} : {})};
       this.consumed = false;
       return this.selected;
-    } finally {this.busy = false;}
+    } catch(error) {if(replacement)this.deps.releasePicture?.(replacement,source?.temporaryPath);throw error;}
+    finally {this.busy = false;}
   }
 
   async insert(prepare?: (selection: Selection) => Promise<string>): Promise<{inserted: true; returned: boolean; warning?: string}> {
@@ -166,13 +181,15 @@ export class ImageController {
       try {
         // Queue the insertion before closing the overlay, as the working reference
         // plugin does. Attach rejection handling before starting the handoff.
-        completion = this.deps.insert(insertionPath).then(
+        completion = (selection.replacement ? this.deps.replacePicture!(selection, insertionPath) : this.deps.insert(insertionPath)).then(
           value => ({ok: true as const, value}), error => ({ok: false as const, error}));
       }
       catch (error) {
         throw new Error(`未能确认插入结果，请先返回笔记检查，避免重复插入。\n${errorText(error)}`);
       }
       const returning = (async () => {
+        // Existing-picture modifications must be acknowledged and saved before leaving.
+        if (selection.replacement) {const result = await completion; if (!result.ok || response(result.value).success !== true) {return false;}}
         try {return await this.deps.returnToNote() === true;} catch {return false;}
       })();
       const [outcome, returned] = await Promise.all([completion, returning]);
@@ -187,9 +204,8 @@ export class ImageController {
       if (inserted.success !== true || inserted.result !== true) {
         throw new Error('系统没有返回明确的插入结果，请先返回笔记检查，避免重复插入。');
       }
-      // Leave the host's native selection untouched. Placement confirmation and
-      // note persistence now follow the normal note UI after the handoff.
-      return returned ? {inserted: true, returned: true} : {inserted: true, returned: false,
+      if(selection.replacement){this.deps.releasePicture?.(selection.replacement,selection.temporaryPath);this.selected=null;}
+      return returned ? {inserted:true,returned:true} : {inserted: true, returned: false,
         warning: '图片已插入，但暂时无法返回笔记。请使用左上角返回按钮。'};
     } finally {this.busy = false;}
   }

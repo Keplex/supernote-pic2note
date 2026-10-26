@@ -74,9 +74,13 @@ function collect(dir, prefix = '') {
 collect(generated);
 const buffer = zipSync(files, {level: 9});
 const verified = unzipSync(buffer);
-for (const required of ['PluginConfig.json', 'LocalImage.bundle', 'icon.png', 'drawable-mdpi/assets_icon.png', 'THIRD-PARTY-NOTICES.txt', 'app.npk', 'LICENSE', 'drawable-mdpi/assets_bolt.png', 'drawable-mdpi/assets_reset.png', 'drawable-mdpi/assets_compare.png', 'drawable-mdpi/assets_comparewhite.png', 'drawable-mdpi/assets_about.png', 'drawable-mdpi/assets_notearrow.png']) {
-  if (!verified[required]?.length) {throw Error('Missing package member: ' + required);}
+const requiredMembers=new Set(['PluginConfig.json','LocalImage.bundle','icon.png','THIRD-PARTY-NOTICES.txt','app.npk','LICENSE']);
+// Validate resources referenced by current code; removed UI must not leave a stale icon checklist.
+const sourceFiles=['App.tsx',...fs.readdirSync(path.join(root,'src')).filter(name=>/\.tsx?$/.test(name)).map(name=>'src/'+name)];
+for(const file of sourceFiles)for(const match of fs.readFileSync(path.join(root,file),'utf8').matchAll(/require\(['"](?:\.\.\/|\.\/)assets\/([^'"]+\.png)['"]\)/g)){
+  requiredMembers.add('drawable-mdpi/assets_'+path.basename(match[1],'.png').toLowerCase().replace(/[^a-z0-9]/g,'')+'.png');
 }
+for(const required of requiredMembers)if(!verified[required]?.length)throw Error('Missing package member: '+required);
 const output = path.join(buildRoot, 'outputs');
 fs.mkdirSync(output, {recursive: true});
 const name = `LocalImage-${pkg.version}.snplg`;

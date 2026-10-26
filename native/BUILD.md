@@ -76,17 +76,17 @@ the native package alongside the JavaScript bundle, icon and notices:
 }
 ```
 
-The outer archive is `build/outputs/LocalImage-0.5.2.snplg`. Install that complete
+The outer archive is `build/outputs/LocalImage-0.9.0.snplg`. Install that complete
 file through Supernote's plugin manager. The source config's stable plugin ID
 must be retained for updates; increase `versionCode` for a new release.
 
 The package contains no Android SDK, JDK, third-party native library or signing
-key. Version 0.2.0 has been tested by the user on a physical device. The user confirmed 0.5.0 functions correctly. Version 0.5.2 adjusts appearance
-only; device rendering of its updated UI still needs confirmation. The insertion
-handoff and pixel engine are unchanged; normal note controls confirm placement
-and handle persistence. The package includes the project's MIT LICENSE and
-THIRD-PARTY-NOTICES.txt. The optional white mask maps final grayscale 255 to 254
-after resampling and tone processing; direct original insertion bypasses it.
+key. Version 0.9.0 adds native clockwise rotation, inversion, full-canvas crop
+previews and a bounded latest-image scanner. Java tests cover the pure engine
+and file scanner; Android decoding, host picture replacement, storage permissions
+and physical e-ink refresh still require device testing. The outer package keeps
+the internal LocalImage name for compatibility; delivery may name the same bytes
+Pic2Note-0.9.0.snplg. It includes MIT LICENSE and third-party notices.
 
 Optional layout checks use the actual component tree and a CSS approximation of
 React Native styles. Set `LOCALIMAGE_LAYOUT_QA=1`, `LOCALIMAGE_PLAYWRIGHT` to the

@@ -40,6 +40,11 @@ function archiveDirectory(folder) {
   scan(folder); return zipSync(files);
 }
 function buildNative() {
+  const config = JSON.parse(fs.readFileSync(path.join(root, 'PluginConfig.json'), 'utf8'));
+  const manifest = fs.readFileSync(path.join(root, 'native/AndroidManifest.xml'), 'utf8');
+  if (!manifest.includes(`android:versionCode="${config.versionCode}"`) || !manifest.includes(`android:versionName="${config.versionName}"`)) {
+    throw Error('Native manifest and plugin versions must match');
+  }
   const t = tools();
   const out = path.join(root, 'build/native');
   if (path.dirname(out) !== path.join(root, 'build')) {throw Error('Invalid native build output');}
@@ -64,7 +69,7 @@ function buildNative() {
 function testNative() {
   const t = tools(), out = path.join(root, 'build/native-tests'); fs.mkdirSync(out, {recursive: true});
   run(t.javac, ['--release', '8', '-encoding', 'UTF-8', '-d', out,
-    path.join(root, 'native/src/com/localimage/editor/ToneMath.java'), ...javaSources(path.join(root, 'native/tests'))]);
+    path.join(root, 'native/src/com/localimage/editor/ToneMath.java'), path.join(root, 'native/src/com/localimage/editor/LatestImage.java'), path.join(root, 'native/src/com/localimage/editor/PreviewPixels.java'), ...javaSources(path.join(root, 'native/tests'))]);
   run(t.java, ['-Djava.awt.headless=true', '-cp', out, 'com.localimage.editor.ToneMathTest', out]);
 }
 module.exports = {buildNative, testNative};
